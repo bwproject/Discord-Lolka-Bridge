@@ -140,8 +140,8 @@ DAVE: dropped N undecryptable frame(s) on ssrc ... (session not ready)
 ### 2. Скопируйте репозиторий
 
 ```bash
-git clone https://github.com/bwproject/Discord-Lolka-Voice-Bridge.git
-cd Discord-Lolka-Voice-Bridge
+git clone https://github.com/bwproject/Discord-Lolka-Bridge.git
+cd Discord-Lolka-Bridge
 ```
 
 ### 3. Установите зависимости Python
