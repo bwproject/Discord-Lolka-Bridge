@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import queue
 import struct
 import threading
@@ -15,7 +16,15 @@ log = logging.getLogger(__name__)
 
 SAMPLE_RATE = 48_000
 CHANNELS = 2
-FRAME_MS = 20
+# discord.py requests audio in fixed 20 ms frames. Keep this configurable
+# in .env for clarity, but reject unsupported frame sizes to avoid playback drift.
+try:
+    FRAME_MS = int(os.getenv("FRAME_MS", "20"))
+except ValueError as exc:
+    raise RuntimeError("FRAME_MS must be an integer (20)") from exc
+if FRAME_MS != 20:
+    raise RuntimeError("FRAME_MS must be 20: Discord AudioSource uses fixed 20 ms frames")
+
 SAMPLES_PER_FRAME = SAMPLE_RATE * FRAME_MS // 1000
 FRAME_BYTES = SAMPLES_PER_FRAME * CHANNELS * 2
 
@@ -37,7 +46,7 @@ def _tone_frame(phase: float) -> tuple[bytes, float]:
 class PCMFrameMixer:
     """Thread-safe per-speaker queues mixed into 20 ms stereo PCM frames."""
 
-    def __init__(self, max_frames_per_speaker: int = 12) -> None:
+    def __init__(self, max_frames_per_speaker: int = 4) -> None:
         self._queues: dict[Hashable, queue.Queue[bytes]] = {}
         # Audio callbacks are not guaranteed to deliver exactly one 20 ms
         # frame per call. Keep partial PCM between calls instead of padding
