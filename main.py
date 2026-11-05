@@ -10,6 +10,7 @@ import lolka
 from lolka.ext import commands as lolka_commands
 
 from bridge.config import Config
+from bridge.dashboard import DashboardServer
 from bridge.dave import patch_dave_transitions
 from bridge.manager import VoiceBridge
 
@@ -52,6 +53,36 @@ async def main() -> None:
     discord_bot = discord_commands.Bot(command_prefix=config.command_prefix, intents=discord_intents)
     lolka_bot = lolka_commands.Bot(command_prefix=config.command_prefix, intents=lolka_intents)
     bridge = VoiceBridge(discord_bot, lolka_bot, config)
+    process_started_at = asyncio.get_running_loop().time()
+
+    def dashboard_status() -> dict[str, Any]:
+        discord_voice = bridge.discord_voice
+        lolka_voice = bridge.lolka_voice
+        discord_channel = getattr(discord_voice, "channel", None)
+        lolka_channel = getattr(lolka_voice, "channel", None)
+        discord_connected = bool(discord_voice and discord_voice.is_connected())
+        lolka_connected = bool(lolka_voice and lolka_voice.is_connected())
+        return {
+            "uptime_seconds": asyncio.get_running_loop().time() - process_started_at,
+            "bridge": {"connected": bridge.connected},
+            "discord": {
+                "ready": discord_bot.is_ready() and not discord_bot.is_closed(),
+                "name": str(discord_bot.user) if discord_bot.user else None,
+                "voice_connected": discord_connected,
+                "channel": getattr(discord_channel, "name", None),
+                "audio_playing": bool(discord_voice and discord_voice.is_playing()),
+            },
+            "lolka": {
+                "ready": lolka_bot.is_ready() and not lolka_bot.is_closed(),
+                "name": str(lolka_bot.user) if lolka_bot.user else None,
+                "voice_connected": lolka_connected,
+                "channel": getattr(lolka_channel, "name", None),
+                "audio_playing": bool(lolka_voice and lolka_voice.is_playing()),
+            },
+        }
+
+    dashboard = DashboardServer(config.dashboard_host, config.dashboard_port, dashboard_status)
+    await dashboard.start()
 
     async def send_voice_log(platform: str, member: Any, joined: bool) -> None:
         """Send voice join/leave events to the configured text channels on both platforms."""
@@ -336,6 +367,7 @@ async def main() -> None:
             await supervisor_task
         except asyncio.CancelledError:
             pass
+        await dashboard.close()
         await bridge.stop()
         await discord_bot.close()
         await lolka_bot.close()

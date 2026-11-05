@@ -62,6 +62,8 @@ class Config:
     lolka_log_channel_id: int | None
     diagnostic_tone: bool
     max_frames_per_speaker: int
+    dashboard_host: str
+    dashboard_port: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -77,4 +79,6 @@ class Config:
             lolka_log_channel_id=_optional_id("LOLKA_LOG_CHANNEL_ID"),
             diagnostic_tone=_optional_bool("DIAGNOSTIC_TONE"),
             max_frames_per_speaker=_optional_int("MAX_FRAMES_PER_SPEAKER", default=2),
+            dashboard_host=os.getenv("DASHBOARD_HOST", "127.0.0.1").strip() or "127.0.0.1",
+            dashboard_port=_optional_int("DASHBOARD_PORT", default=8080, minimum=1),
         )
