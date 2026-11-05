@@ -114,7 +114,6 @@ class VoiceBridge:
         self.discord_voice: discord.VoiceClient | None = None
         self.lolka_voice: Any | None = None
         self._lock = asyncio.Lock()
-        self._discord_receive_lock = asyncio.Lock()
         self._track_tasks: set[asyncio.Task[None]] = set()
         self._seen_lolka_speakers: set[str] = set()
         self._logged_resolved_channels: set[tuple[str, int]] = set()
@@ -226,32 +225,6 @@ class VoiceBridge:
                 await self._disconnect_unlocked()
                 raise
             log.info("Голосовой мост активен: Discord %s <-> Lolka %s", discord_channel.id, lolka_channel.id)
-
-    async def refresh_discord_receive(self) -> None:
-        """Rebuild the Discord receive sink after voice membership changes.
-
-        discord-ext-voice-recv can retain stale SSRC/speaking state when a
-        participant leaves and rejoins while the bot stays connected. Restart
-        only the receive listener; keep both voice connections and playback alive.
-        """
-        async with self._discord_receive_lock:
-            await asyncio.sleep(0.75)
-            voice = self.discord_voice
-            if voice is None or not voice.is_connected():
-                return
-            try:
-                if voice.is_listening():
-                    voice.stop_listening()
-                sink = DiscordPCMReceiveSink(
-                    self.discord_to_lolka, getattr(self.discord_bot.user, "id", None)
-                )
-                voice.listen(sink)
-                log.info(
-                    "Discord: приём аудио перезапущен после изменения состава канала; is_listening=%s",
-                    voice.is_listening(),
-                )
-            except Exception:
-                log.exception("Discord: не удалось перезапустить приём аудио после изменения состава канала")
 
     def _on_lolka_track(self, track: Any, user_id: Any, producer_id: Any) -> None:
         if self.lolka_bot.user and str(user_id) == str(self.lolka_bot.user.id):
