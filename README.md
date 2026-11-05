@@ -14,6 +14,8 @@
 
 </div>
 
+**Теги:** `discord` · `lolka` · `discordbot` · `lolkabot` · `bridge`
+
 > **О проекте:** создан в формате вайбкодинга (vibe coding) с помощью **ChatGPT** и **OpenCode**.
 
 > [!NOTE]
