@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - feature/**
+  pull_request:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Verify voice dependencies
+        run: python -c "import discord, davey, lolka; from discord.ext import voice_recv; print('Voice dependencies imported successfully')"
+      - name: Compile Python sources
+        run: python -m compileall -q main.py bridge
