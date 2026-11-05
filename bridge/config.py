@@ -25,6 +25,19 @@ def _optional_id(name: str) -> int | None:
         raise RuntimeError(f"{name} must be a numeric ID") from exc
 
 
+def _optional_int(name: str, default: int, minimum: int = 1) -> int:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+    if parsed < minimum:
+        raise RuntimeError(f"{name} must be at least {minimum}")
+    return parsed
+
+
 def _optional_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name, "").strip().lower()
     if not value:
@@ -48,6 +61,7 @@ class Config:
     discord_log_channel_id: int | None
     lolka_log_channel_id: int | None
     diagnostic_tone: bool
+    max_frames_per_speaker: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -62,4 +76,5 @@ class Config:
             discord_log_channel_id=_optional_id("DISCORD_LOG_CHANNEL_ID"),
             lolka_log_channel_id=_optional_id("LOLKA_LOG_CHANNEL_ID"),
             diagnostic_tone=_optional_bool("DIAGNOSTIC_TONE"),
+            max_frames_per_speaker=_optional_int("MAX_FRAMES_PER_SPEAKER", default=4),
         )

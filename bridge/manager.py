@@ -109,8 +109,8 @@ class VoiceBridge:
         self.discord_bot = discord_bot
         self.lolka_bot = lolka_bot
         self.config = config
-        self.discord_to_lolka = PCMFrameMixer()
-        self.lolka_to_discord = PCMFrameMixer()
+        self.discord_to_lolka = PCMFrameMixer(config.max_frames_per_speaker)
+        self.lolka_to_discord = PCMFrameMixer(config.max_frames_per_speaker)
         self.discord_voice: discord.VoiceClient | None = None
         self.lolka_voice: Any | None = None
         self._lock = asyncio.Lock()
