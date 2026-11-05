@@ -126,77 +126,64 @@ DAVE: dropped N undecryptable frame(s) on ssrc ... (session not ready)
 - `numpy`;
 - `python-dotenv`.
 
-## Установка
+## Установка и запуск
+
+Для работы моста нужны **два бота**: один в Discord и один в Lolka. Оба бота должны быть добавлены на нужные серверы и иметь доступ к соответствующим голосовым каналам, включая разрешения на подключение и передачу звука.
+
+### 1. Создайте ботов
+
+- Discord: [Discord Developer Portal](https://discord.com/developers/applications) — создайте приложение, добавьте Bot и получите токен.
+- Lolka: [Документация по созданию ботов Lolka](https://lolka.app/developers/bots) — создайте бота и получите токен.
+
+Добавьте каждого бота на нужный сервер и выдайте ему доступ к голосовому каналу.
+
+### 2. Скопируйте репозиторий
 
 ```bash
 git clone https://github.com/bwproject/Discord-Lolka-Voice-Bridge.git
 cd Discord-Lolka-Voice-Bridge
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
+```
+
+### 3. Установите зависимости Python
+
+```bash
 python -m pip install -r requirements.txt
+```
+
+### 4. Укажите токены и ID голосовых каналов
+
+Создайте файл `.env` на основе шаблона:
+
+```bash
 cp .env.example .env
 ```
 
-После установки заполните `.env`. Файл `.env` содержит секреты и не должен попадать в git.
+Откройте `.env` и укажите:
 
-## Настройка .env
+- `DISCORD_BOT_TOKEN` — токен Discord-бота;
+- `DISCORD_VOICE_CHANNEL_ID` — ID голосового канала Discord;
+- `LOLKA_BOT_TOKEN` — токен Lolka-бота;
+- `LOLKA_VOICE_CHANNEL_ID` — ID голосового канала Lolka.
 
 Пример:
 
 ```dotenv
-# Discord
-DISCORD_BOT_TOKEN=ваш_токен_discord_бота
-DISCORD_GUILD_ID=ID_сервера_discord
+DISCORD_BOT_TOKEN=токен_discord_бота
 DISCORD_VOICE_CHANNEL_ID=ID_голосового_канала_discord
 
-# Lolka
-LOLKA_BOT_TOKEN=ваш_токен_lolka_бота
-LOLKA_GUILD_ID=ID_сервера_lolka
+LOLKA_BOT_TOKEN=токен_lolka_бота
 LOLKA_VOICE_CHANNEL_ID=ID_голосового_канала_lolka
-
-# Общие настройки
-COMMAND_PREFIX=!
-DISCORD_LOG_CHANNEL_ID=ID_текстового_канала_discord
-LOLKA_LOG_CHANNEL_ID=ID_текстового_канала_lolka
-
-# Необязательно: диагностический тон вместо реального аудио
-DIAGNOSTIC_TONE=false
 ```
 
-| Переменная | Обязательна | Назначение |
-|---|---:|---|
-| `DISCORD_BOT_TOKEN` | да | Токен Discord-бота |
-| `DISCORD_GUILD_ID` | нет | ID Discord-сервера. Если не задан, канал ищется глобально |
-| `DISCORD_VOICE_CHANNEL_ID` | да | ID голосового канала Discord |
-| `LOLKA_BOT_TOKEN` | да | Токен Lolka-бота |
-| `LOLKA_GUILD_ID` | нет | ID сервера Lolka. Если не задан, канал ищется глобально |
-| `LOLKA_VOICE_CHANNEL_ID` | да | ID голосового канала Lolka |
-| `COMMAND_PREFIX` | нет | Префикс команд, по умолчанию `!` |
-| `DISCORD_LOG_CHANNEL_ID` | нет | Текстовый канал Discord для событий входа/выхода |
-| `LOLKA_LOG_CHANNEL_ID` | нет | Текстовый канал Lolka для событий входа/выхода |
-| `DIAGNOSTIC_TONE` | нет | `true` — вместо реального аудио оба направления выводят тон 440 Гц. По умолчанию `false` |
+Остальные параметры в `.env.example` необязательны. Не публикуйте файл `.env` и не добавляйте его в git — в репозитории должен находиться только `.env.example`.
 
-Все ID должны быть числовыми. Для `DIAGNOSTIC_TONE` поддерживаются значения `true/false`, `1/0`, `yes/no`, `on/off` без учёта регистра. После изменения `.env` нужен перезапуск процесса.
-
-**Безопасность:** не добавляйте `.env` в git и не публикуйте токены. Если файл уже попал в репозиторий или историю коммитов, отзовите и перевыпустите токены, затем удалите файл из истории. В репозитории должен храниться только шаблон `.env.example` без секретов.
-
-## Запуск
+### 5. Запустите бота
 
 ```bash
 python main.py
 ```
 
-После запуска:
-
-1. Оба клиента подключаются к Discord и Lolka.
-2. После готовности обоих ботов очищаются старые сообщения моста в лог-каналах.
-3. Запускается супервизор голосовых подключений.
-4. Боты подключаются к настроенным голосовым каналам и остаются в них.
-
-Супервизор проверяет подключения примерно каждые 5 секунд и дополнительно реагирует на события входа/выхода участников. При ошибке подключения следующая попытка выполняется через 10 секунд.
-
-
+После запуска оба бота подключатся к указанным голосовым каналам и начнут передавать звук в обе стороны.
 
 ## Команды
 
