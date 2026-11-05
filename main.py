@@ -169,6 +169,36 @@ async def main() -> None:
         mark_client_ready("lolka")
 
     voice_activity_changed = asyncio.Event()
+    discord_rejoin_task: asyncio.Task[None] | None = None
+
+    async def refresh_bridge_after_discord_join() -> None:
+        """Rebuild voice sessions after a user re-enters the configured Discord channel.
+
+        Discord can keep the bot's VoiceClient connected while its receive/DAVE
+        session no longer delivers decoded audio after a participant leaves and
+        rejoins. Reconnecting both sides gives voice-recv and DAVE a clean session.
+        """
+        try:
+            # Let Discord finish applying the member voice-state update first.
+            await asyncio.sleep(1.5)
+            channel = discord_bot.get_channel(config.discord_voice_channel_id)
+            if channel is None:
+                channel = await discord_bot.fetch_channel(config.discord_voice_channel_id)
+            members = getattr(channel, "members", ())
+            if not any(not getattr(member, "bot", False) for member in members):
+                log.info("Discord: после события входа в канале нет пользователей; перезапуск моста отменён")
+                return
+            if not bridge.connected:
+                log.info("Discord: голосовое подключение уже потеряно; супервизор восстановит его")
+                return
+            log.info("Discord: пользователь вернулся в канал; переинициализирую голосовые сессии и DAVE")
+            await bridge.stop()
+            await bridge.start()
+            log.info("Discord: голосовые сессии успешно переинициализированы после повторного входа")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Discord: не удалось переинициализировать мост после повторного входа; супервизор повторит подключение")
 
     @discord_bot.event
     async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState) -> None:
@@ -192,6 +222,18 @@ async def main() -> None:
             elif before_id == target_id:
                 await send_voice_log("Discord", member, False)
             voice_activity_changed.set()
+
+            # A user rejoining can leave the Discord VoiceClient technically
+            # connected while voice-recv/DAVE has stopped delivering audio.
+            # Debounce bursts of gateway events and rebuild the session once.
+            if after_id == target_id and not getattr(member, "bot", False):
+                nonlocal discord_rejoin_task
+                if discord_rejoin_task is not None and not discord_rejoin_task.done():
+                    discord_rejoin_task.cancel()
+                discord_rejoin_task = asyncio.create_task(
+                    refresh_bridge_after_discord_join(),
+                    name="discord-voice-rejoin-refresh",
+                )
 
     @lolka_bot.event
     async def on_voice_state_update(member: Any, before: Any, after: Any) -> None:
@@ -288,6 +330,8 @@ async def main() -> None:
         )
     finally:
         supervisor_task.cancel()
+        if discord_rejoin_task is not None and not discord_rejoin_task.done():
+            discord_rejoin_task.cancel()
         try:
             await supervisor_task
         except asyncio.CancelledError:
