@@ -196,42 +196,7 @@ python main.py
 
 Супервизор проверяет подключения примерно каждые 5 секунд и дополнительно реагирует на события входа/выхода участников. При ошибке подключения следующая попытка выполняется через 10 секунд.
 
-### Pterodactyl / Pelican
 
-В startup-команде панели должны быть шаги:
-
-```bash
-git pull --ff-only
-python -m pip install -r requirements.txt
-python main.py
-```
-
-Для постоянной работы включите автоперезапуск контейнера средствами панели. Если процесс остановлен, мост не работает, даже если боты остаются в каналах.
-
-### systemd
-
-Пример unit-файла:
-
-```ini
-[Unit]
-Description=Discord-Lolka Voice Bridge
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/Discord-Lolka-Voice-Bridge
-ExecStart=/opt/Discord-Lolka-Voice-Bridge/.venv/bin/python main.py
-Restart=always
-RestartSec=10
-User=voicebridge
-Group=voicebridge
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Пути, пользователя и группу замените на свои.
 
 ## Команды
 
@@ -272,7 +237,7 @@ WantedBy=multi-user.target
 
 ## Логи и диагностика
 
-Логи выводятся в stdout/stderr, поэтому видны в консоли процесса, в Pelican/Pterodactyl или в journalctl при запуске через systemd.
+Логи выводятся в stdout/stderr и видны в консоли, из которой запущен `python main.py`.
 
 Формат:
 
