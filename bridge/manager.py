@@ -30,8 +30,6 @@ class DiscordPCMReceiveSink(voice_recv.AudioSink):
         self._last_transfer_log_at = 0.0
         self._received_frames = 0
         self._received_bytes = 0
-        self._non_silent_frames = 0
-        self._non_silent_bytes = 0
 
     @voice_recv.AudioSink.listener()
     def on_voice_member_speaking_state(self, member: Any, ssrc: int, state: Any) -> None:
@@ -83,22 +81,16 @@ class DiscordPCMReceiveSink(voice_recv.AudioSink):
         self._mixer.push(user.id, pcm)
         self._received_frames += 1
         self._received_bytes += len(pcm)
-        if any(pcm):
-            self._non_silent_frames += 1
-            self._non_silent_bytes += sum(1 for value in pcm if value)
         now = time.monotonic()
         if self._last_transfer_log_at == 0.0 or now - self._last_transfer_log_at >= 5.0:
             self._last_transfer_log_at = now
             log.info(
                 "Discord -> Lolka: звук получен от %s; PCM поставлен в очередь передачи "
-                "(вызовов=%s, данных=%s байт, ненулевых вызовов=%s, ненулевых байт=%s)",
+                "(вызовов=%s, данных=%s байт)",
                 user, self._received_frames, self._received_bytes,
-                self._non_silent_frames, self._non_silent_bytes,
             )
             self._received_frames = 0
             self._received_bytes = 0
-            self._non_silent_frames = 0
-            self._non_silent_bytes = 0
 
     def cleanup(self) -> None:
         log.info("Discord: приём аудио остановлен")

@@ -9,6 +9,7 @@ import threading
 import time
 from typing import Hashable
 
+import numpy as np
 import discord
 import lolka
 
@@ -27,6 +28,7 @@ if FRAME_MS != 20:
 
 SAMPLES_PER_FRAME = SAMPLE_RATE * FRAME_MS // 1000
 FRAME_BYTES = SAMPLES_PER_FRAME * CHANNELS * 2
+SILENCE_FRAME = bytes(FRAME_BYTES)
 
 TONE_FREQUENCY = 440.0
 TONE_AMPLITUDE = 6_000
@@ -46,7 +48,7 @@ def _tone_frame(phase: float) -> tuple[bytes, float]:
 class PCMFrameMixer:
     """Thread-safe per-speaker queues mixed into 20 ms stereo PCM frames."""
 
-    def __init__(self, max_frames_per_speaker: int = 4) -> None:
+    def __init__(self, max_frames_per_speaker: int = 2) -> None:
         self._queues: dict[Hashable, queue.Queue[bytes]] = {}
         # Audio callbacks are not guaranteed to deliver exactly one 20 ms
         # frame per call. Keep partial PCM between calls instead of padding
@@ -82,10 +84,13 @@ class PCMFrameMixer:
                         pass
 
     def read_frame_with_status(self) -> tuple[bytes, bool, bool]:
-        """Return PCM, whether any queued frame was consumed, and whether it contains non-zero samples."""
+        """Return mixed PCM, whether audio was consumed, and whether it is non-silent."""
         with self._lock:
-            queues = list(self._queues.values())
-        mixed = [0] * (SAMPLES_PER_FRAME * CHANNELS)
+            queues = tuple(self._queues.values())
+
+        # Accumulate in int32 to avoid int16 overflow when several speakers
+        # talk simultaneously. NumPy performs the sample operations in native code.
+        mixed = np.zeros(SAMPLES_PER_FRAME * CHANNELS, dtype=np.int32)
         has_audio = False
         for source in queues:
             try:
@@ -93,14 +98,15 @@ class PCMFrameMixer:
             except queue.Empty:
                 continue
             has_audio = True
-            samples = struct.unpack("<" + "h" * (len(frame) // 2), frame)
-            for index, sample in enumerate(samples):
-                mixed[index] += sample
+            samples = np.frombuffer(frame, dtype="<i2")
+            np.add(mixed, samples, out=mixed, casting="unsafe")
+
         if not has_audio:
-            return bytes(FRAME_BYTES), False, False
-        mixed = [max(-32768, min(32767, sample)) for sample in mixed]
-        has_signal = any(mixed)
-        return struct.pack("<" + "h" * len(mixed), *mixed), True, has_signal
+            return SILENCE_FRAME, False, False
+
+        has_signal = bool(np.any(mixed))
+        np.clip(mixed, -32768, 32767, out=mixed)
+        return mixed.astype("<i2", copy=False).tobytes(), True, has_signal
 
     def read_frame(self) -> bytes:
         # Keep the original public API for callers and tests.

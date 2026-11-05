@@ -76,5 +76,5 @@ class Config:
             discord_log_channel_id=_optional_id("DISCORD_LOG_CHANNEL_ID"),
             lolka_log_channel_id=_optional_id("LOLKA_LOG_CHANNEL_ID"),
             diagnostic_tone=_optional_bool("DIAGNOSTIC_TONE"),
-            max_frames_per_speaker=_optional_int("MAX_FRAMES_PER_SPEAKER", default=4),
+            max_frames_per_speaker=_optional_int("MAX_FRAMES_PER_SPEAKER", default=2),
         )
