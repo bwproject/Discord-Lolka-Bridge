@@ -22,12 +22,14 @@ logging.basicConfig(
 log = logging.getLogger("voice-bridge")
 
 # Discord's default INFO logs hide Gateway close codes and reconnect details.
-# DEBUG is enabled only for the Gateway logger to diagnose invalid sessions.
 logging.getLogger("discord.gateway").setLevel(logging.DEBUG)
-
-# RTCP Sender Reports (packet type 200) are normal voice traffic. The
-# voice_recv reader currently labels them as unexpected at INFO level.
+# RTCP Sender Reports are normal voice traffic, not audio payloads.
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
+
+# Wait this long after the last human leaves before disconnecting both voice
+# clients. This absorbs short channel switches and avoids connect/disconnect flaps.
+VOICE_IDLE_TIMEOUT_SECONDS = 10
+VOICE_PRESENCE_RECHECK_SECONDS = 30
 
 
 async def main() -> None:
@@ -64,7 +66,7 @@ async def main() -> None:
         lolka_connected = bool(lolka_voice and lolka_voice.is_connected())
         return {
             "uptime_seconds": asyncio.get_running_loop().time() - process_started_at,
-            "bridge": {"connected": bridge.connected},
+            "bridge": {"connected": bridge.connected, "mode": "automatic-presence"},
             "discord": {
                 "ready": discord_bot.is_ready() and not discord_bot.is_closed(),
                 "name": str(discord_bot.user) if discord_bot.user else None,
@@ -85,7 +87,7 @@ async def main() -> None:
     await dashboard.start()
 
     async def send_voice_log(platform: str, member: Any, joined: bool) -> None:
-        """Send voice join/leave events to the configured text channels on both platforms."""
+        """Send human voice join/leave events to configured text channels."""
         if getattr(member, "bot", False):
             return
         member_id = getattr(member, "id", None)
@@ -108,10 +110,7 @@ async def main() -> None:
                     channel = await discord_bot.fetch_channel(config.discord_log_channel_id)
                 if not hasattr(channel, "send"):
                     raise RuntimeError("Configured Discord log channel is not a text channel")
-                await channel.send(
-                    message,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
+                await channel.send(message, allowed_mentions=discord.AllowedMentions.none())
             except Exception:
                 log.exception("Не удалось отправить событие %s в текстовый канал Discord", platform)
 
@@ -133,7 +132,6 @@ async def main() -> None:
         """Delete only this bot's previous voice join/leave log messages."""
         if channel_id is None:
             return
-
         try:
             channel = client.get_channel(channel_id)
             if channel is None:
@@ -141,13 +139,10 @@ async def main() -> None:
                 if fetch_channel is None:
                     raise RuntimeError("Client does not expose fetch_channel()")
                 channel = await fetch_channel(channel_id)
-
             history = getattr(channel, "history", None)
             if history is None:
                 raise RuntimeError("Configured log channel does not expose message history()")
-
-            bot_user = getattr(client, "user", None)
-            bot_id = getattr(bot_user, "id", None)
+            bot_id = getattr(getattr(client, "user", None), "id", None)
             if bot_id is None:
                 raise RuntimeError("Bot user is not ready")
 
@@ -162,11 +157,8 @@ async def main() -> None:
                 if author_id == bot_id and is_voice_log:
                     await message.delete()
                     deleted += 1
-
             log.info("%s: очищено старых записей о голосовых событиях: %s", platform, deleted)
         except Exception:
-            # A missing permission or an unavailable history endpoint must not
-            # prevent either bot from starting the voice bridge.
             log.exception("%s: не удалось очистить старые записи в текстовом канале", platform)
 
     ready_clients: set[str] = set()
@@ -193,95 +185,89 @@ async def main() -> None:
     async def on_ready() -> None:
         log.info("Discord bot готов: %s (ID: %s)", discord_bot.user, discord_bot.user.id)
         mark_client_ready("discord")
+        voice_activity_changed.set()
 
     @lolka_bot.event
     async def on_ready() -> None:
         log.info("Lolka bot готов: %s (ID: %s)", lolka_bot.user, lolka_bot.user.id)
         mark_client_ready("lolka")
+        voice_activity_changed.set()
 
     voice_activity_changed = asyncio.Event()
-    discord_rejoin_task: asyncio.Task[None] | None = None
 
-    async def refresh_bridge_after_discord_join() -> None:
-        """Rebuild voice sessions after a user re-enters the configured Discord channel.
+    async def get_human_members(client: Any, channel_id: int, platform: str) -> list[Any]:
+        """Return cached non-bot members of a configured voice channel."""
+        channel = client.get_channel(channel_id)
+        if channel is None:
+            fetch_channel = getattr(client, "fetch_channel", None)
+            if fetch_channel is None:
+                raise RuntimeError(f"{platform}: client cannot fetch voice channel {channel_id}")
+            channel = await fetch_channel(channel_id)
+        members = getattr(channel, "members", None)
+        if members is None:
+            raise RuntimeError(f"{platform}: member list is unavailable for voice channel {channel_id}")
+        return [member for member in members if not getattr(member, "bot", False)]
 
-        Discord can keep the bot's VoiceClient connected while its receive/DAVE
-        session no longer delivers decoded audio after a participant leaves and
-        rejoins. Reconnecting both sides gives voice-recv and DAVE a clean session.
-        """
-        try:
-            # Let Discord finish applying the member voice-state update first.
-            await asyncio.sleep(1.5)
-            channel = discord_bot.get_channel(config.discord_voice_channel_id)
-            if channel is None:
-                channel = await discord_bot.fetch_channel(config.discord_voice_channel_id)
-            members = getattr(channel, "members", ())
-            if not any(not getattr(member, "bot", False) for member in members):
-                log.info("Discord: после события входа в канале нет пользователей; перезапуск моста отменён")
-                return
-            if not bridge.connected:
-                log.info("Discord: голосовое подключение уже потеряно; супервизор восстановит его")
-                return
-            log.info("Discord: пользователь вернулся в канал; переинициализирую голосовые сессии и DAVE")
-            await bridge.stop()
-            await bridge.start()
-            log.info("Discord: голосовые сессии успешно переинициализированы после повторного входа")
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            log.exception("Discord: не удалось переинициализировать мост после повторного входа; супервизор повторит подключение")
+    async def has_human_activity() -> bool:
+        """The bridge is needed while at least one human is in either target channel."""
+        discord_members = await get_human_members(
+            discord_bot, config.discord_voice_channel_id, "Discord"
+        )
+        lolka_members = await get_human_members(
+            lolka_bot, config.lolka_voice_channel_id, "Lolka"
+        )
+        log.debug(
+            "Участники целевых каналов: Discord=%s, Lolka=%s",
+            len(discord_members), len(lolka_members),
+        )
+        return bool(discord_members or lolka_members)
 
     @discord_bot.event
-    async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState) -> None:
+    async def on_voice_state_update(
+        member: discord.Member,
+        before: discord.VoiceState,
+        after: discord.VoiceState,
+    ) -> None:
         if discord_bot.user and member.id == discord_bot.user.id:
             if before.channel is not None and after.channel is None:
                 log.warning("Discord: бот отключился от голосового канала")
             elif before.channel != after.channel and after.channel is not None:
                 log.info("Discord: голосовой канал бота изменён на %s", after.channel.id)
-        elif before.channel != after.channel:
-            log.info(
-                "Discord: изменился состав голосового канала (%s -> %s), участник=%s",
-                getattr(before.channel, "id", None),
-                getattr(after.channel, "id", None),
-                member,
-            )
-            target_id = config.discord_voice_channel_id
-            before_id = getattr(before.channel, "id", None)
-            after_id = getattr(after.channel, "id", None)
-            if after_id == target_id:
-                await send_voice_log("Discord", member, True)
-            elif before_id == target_id:
-                await send_voice_log("Discord", member, False)
-            voice_activity_changed.set()
+            return
 
-            # A user rejoining can leave the Discord VoiceClient technically
-            # connected while voice-recv/DAVE has stopped delivering audio.
-            # Debounce bursts of gateway events and rebuild the session once.
-            if after_id == target_id and not getattr(member, "bot", False):
-                nonlocal discord_rejoin_task
-                if discord_rejoin_task is not None and not discord_rejoin_task.done():
-                    discord_rejoin_task.cancel()
-                discord_rejoin_task = asyncio.create_task(
-                    refresh_bridge_after_discord_join(),
-                    name="discord-voice-rejoin-refresh",
-                )
+        if before.channel == after.channel:
+            return
+
+        target_id = config.discord_voice_channel_id
+        before_id = getattr(before.channel, "id", None)
+        after_id = getattr(after.channel, "id", None)
+        log.info(
+            "Discord: изменился состав голосового канала (%s -> %s), участник=%s",
+            before_id, after_id, member,
+        )
+        if after_id == target_id:
+            await send_voice_log("Discord", member, True)
+        if before_id == target_id:
+            await send_voice_log("Discord", member, False)
+        if target_id in {before_id, after_id}:
+            voice_activity_changed.set()
 
     @lolka_bot.event
     async def on_voice_state_update(member: Any, before: Any, after: Any) -> None:
-        if before.channel != after.channel:
-            log.info(
-                "Lolka: изменился состав голосового канала (%s -> %s), участник=%s",
-                getattr(before.channel, "id", None),
-                getattr(after.channel, "id", None),
-                getattr(member, "name", member),
-            )
-            target_id = config.lolka_voice_channel_id
-            before_id = getattr(before.channel, "id", None)
-            after_id = getattr(after.channel, "id", None)
-            if after_id == target_id:
-                await send_voice_log("Lolka", member, True)
-            elif before_id == target_id:
-                await send_voice_log("Lolka", member, False)
+        if before.channel == after.channel:
+            return
+        target_id = config.lolka_voice_channel_id
+        before_id = getattr(before.channel, "id", None)
+        after_id = getattr(after.channel, "id", None)
+        log.info(
+            "Lolka: изменился состав голосового канала (%s -> %s), участник=%s",
+            before_id, after_id, getattr(member, "name", member),
+        )
+        if after_id == target_id:
+            await send_voice_log("Lolka", member, True)
+        if before_id == target_id:
+            await send_voice_log("Lolka", member, False)
+        if target_id in {before_id, after_id}:
             voice_activity_changed.set()
 
     @discord_bot.command(name="bridge")
@@ -290,13 +276,14 @@ async def main() -> None:
         action = action.lower()
         if action in {"start", "connect"}:
             await bridge.start()
-            await ctx.reply("🔊 Подключаю оба бота к настроенным голосовым каналам.")
+            await ctx.reply("🔊 Принудительно запускаю голосовой мост. Автоматика отключит его при отсутствии участников.")
         elif action == "stop":
-            await ctx.reply("Постоянное подключение включено: боты остаются в голосовых каналах.")
+            await bridge.stop()
+            await ctx.reply("⏹️ Голосовой мост отключён. Автоматика подключит его при появлении участников.")
         elif action == "status":
-            await ctx.reply("🟢 Оба бота подключены." if bridge.connected else "🟠 Подключение восстанавливается.")
+            await ctx.reply("🟢 Оба бота подключены." if bridge.connected else "⚪ Мост ожидает участников.")
         else:
-            await ctx.reply("Использование: !bridge start|status")
+            await ctx.reply("Использование: !bridge start|stop|status")
 
     @lolka_bot.command(name="bridge")
     async def lolka_bridge(ctx: lolka_commands.Context, action: str = "status") -> None:
@@ -307,52 +294,94 @@ async def main() -> None:
         action = action.lower()
         if action in {"start", "connect"}:
             await bridge.start()
-            await ctx.send("🔊 Подключаю оба бота к настроенным голосовым каналам.")
+            await ctx.send("🔊 Принудительно запускаю голосовой мост. Автоматика отключит его при отсутствии участников.")
         elif action == "stop":
-            await ctx.send("Постоянное подключение включено: боты остаются в голосовых каналах.")
+            await bridge.stop()
+            await ctx.send("⏹️ Голосовой мост отключён. Автоматика подключит его при появлении участников.")
         elif action == "status":
-            await ctx.send("🟢 Оба бота подключены." if bridge.connected else "🟠 Подключение восстанавливается.")
+            await ctx.send("🟢 Оба бота подключены." if bridge.connected else "⚪ Мост ожидает участников.")
         else:
-            await ctx.send("Использование: !bridge start|status")
+            await ctx.send("Использование: !bridge start|stop|status")
 
-    async def keep_bots_in_voice() -> None:
-        """Keep both bots connected so the DAVE session is ready before users join."""
-        retry_delay = 10
+    async def wait_for_voice_activity(timeout: float) -> None:
+        try:
+            await asyncio.wait_for(voice_activity_changed.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
+
+    async def supervise_voice_presence() -> None:
+        """Connect both bots only while at least one human is in either target channel."""
         while not discord_bot.is_closed() and not lolka_bot.is_closed():
+            # Clear before reading member lists so an event arriving during the
+            # lookup remains set and is handled immediately on the next wait.
+            voice_activity_changed.clear()
             try:
                 await discord_bot.wait_until_ready()
                 await lolka_bot.wait_until_ready()
-                if not bridge.connected:
-                    log.info("Подключаю ботов к голосовым каналам")
-                    await bridge.start()
+                active = await has_human_activity()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.exception("Ошибка проверки голосовых подключений; следующая попытка через %s сек.", retry_delay)
-                await asyncio.sleep(retry_delay)
+                log.exception("Не удалось проверить участников голосовых каналов; повтор через 10 секунд")
+                await wait_for_voice_activity(10)
                 continue
 
-            voice_activity_changed.clear()
-            try:
-                await asyncio.wait_for(voice_activity_changed.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                pass
+            if active:
+                if not bridge.connected:
+                    try:
+                        log.info("Обнаружены участники в Discord/Lolka; подключаю оба голосовых клиента")
+                        await bridge.start()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        log.exception("Не удалось запустить голосовой мост; повтор через 10 секунд")
+                        await wait_for_voice_activity(10)
+                        continue
+                await wait_for_voice_activity(VOICE_PRESENCE_RECHECK_SECONDS)
+                continue
+
+            if bridge.connected:
+                log.info(
+                    "В целевых каналах нет пользователей; отключение через %s секунд, если никто не вернётся",
+                    VOICE_IDLE_TIMEOUT_SECONDS,
+                )
+                await wait_for_voice_activity(VOICE_IDLE_TIMEOUT_SECONDS)
+                # Any voice-state event means the member list must be checked
+                # again before disconnecting (including channel-to-channel moves).
+                if voice_activity_changed.is_set():
+                    continue
+                try:
+                    if await has_human_activity():
+                        continue
+                    log.info("Каналы всё ещё пусты; останавливаю аудиомост и отключаю обоих ботов")
+                    await bridge.stop()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("Не удалось подтвердить пустоту каналов; оставляю мост подключённым")
+                continue
+
+            # No users and no voice connections: sleep until a relevant event,
+            # with a slow periodic recheck as protection against missed gateway events.
+            await wait_for_voice_activity(VOICE_PRESENCE_RECHECK_SECONDS)
 
     async def start_supervisor_after_ready() -> None:
-        # Do not call wait_until_ready() before Client.start() has initialized
-        # the clients. on_ready fires only after each gateway client is initialized.
         await both_bots_ready.wait()
         log.info("Оба бота авторизованы и готовы; очищаю старые записи в лог-каналах")
         await asyncio.gather(
             clear_old_voice_logs(discord_bot, config.discord_log_channel_id, "Discord"),
             clear_old_voice_logs(lolka_bot, config.lolka_log_channel_id, "Lolka"),
         )
-        log.info("Запускаю контроль голосовых подключений")
-        await keep_bots_in_voice()
+        log.info(
+            "Запускаю контроль присутствия: мост активен при наличии хотя бы одного пользователя "
+            "в Discord или Lolka; idle timeout=%s сек.",
+            VOICE_IDLE_TIMEOUT_SECONDS,
+        )
+        await supervise_voice_presence()
 
     supervisor_task = asyncio.create_task(
         start_supervisor_after_ready(),
-        name="voice-connection-supervisor",
+        name="voice-presence-supervisor",
     )
     try:
         await asyncio.gather(
@@ -361,8 +390,6 @@ async def main() -> None:
         )
     finally:
         supervisor_task.cancel()
-        if discord_rejoin_task is not None and not discord_rejoin_task.done():
-            discord_rejoin_task.cancel()
         try:
             await supervisor_task
         except asyncio.CancelledError:
