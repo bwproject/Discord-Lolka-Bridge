@@ -270,6 +270,23 @@ async def main() -> None:
         if target_id in {before_id, after_id}:
             voice_activity_changed.set()
 
+    info_message = (
+        "🌉 **Discord ↔ Lolka Voice Bridge**\n"
+        "Двусторонняя передача голоса между Discord и Lolka в реальном времени.\n"
+        "• Автоматическое подключение ботов, когда в целевых каналах есть пользователи.\n"
+        "• Автоматическое отключение, когда оба канала пусты.\n"
+        "• Веб-панель показывает состояние ботов и аудиомоста.\n\n"
+        "🔗 GitHub: https://github.com/bwproject/Discord-Lolka-Bridge"
+    )
+
+    @discord_bot.command(name="info")
+    async def discord_info(ctx: discord_commands.Context) -> None:
+        await ctx.reply(info_message, mention_author=False)
+
+    @lolka_bot.command(name="info")
+    async def lolka_info(ctx: lolka_commands.Context) -> None:
+        await ctx.send(info_message)
+
     @discord_bot.command(name="bridge")
     @discord_commands.has_guild_permissions(manage_guild=True)
     async def discord_bridge(ctx: discord_commands.Context, action: str = "status") -> None:
