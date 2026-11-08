@@ -37,7 +37,6 @@ MAX_MIXER_SPEAKERS = 6
 # Adaptive queue capacity: start at the configured low-latency depth and grow
 # only when packets arrive faster than the playback clock can consume them.
 MAX_ADAPTIVE_FRAMES = 4
-MIN_ADAPTIVE_FRAMES = 2
 JITTER_GROW_AFTER = 3
 JITTER_SHRINK_AFTER_SECONDS = 20.0
 SOFT_LIMITER_KNEE = 0.75
@@ -161,7 +160,6 @@ class PCMFrameMixer:
                         pass
                 else:
                     self._consecutive_overflows[speaker_id] = 0
-                    self._stable_since[speaker_id] = now
 
     def read_frame_with_status(self) -> tuple[bytes, bool, bool]:
         """Return mixed PCM, whether audio was consumed, and whether it is non-silent."""
@@ -260,11 +258,16 @@ class _LoggedMixerSource:
         self._non_silent_frames += int(had_signal)
         now = time.monotonic()
         if self._last_log_at == 0.0 or now - self._last_log_at >= 5.0:
+            stats = self._mixer.diagnostics()
             log.info(
                 "%s: AudioSource.read() вызван; кадров прочитано=%s, "
-                "кадров получено из очереди=%s, ненулевых PCM-кадров=%s",
+                "кадров получено из очереди=%s, ненулевых PCM-кадров=%s; "
+                "mixer speakers=%s queued=%s underruns=%s overflows=%s "
+                "adaptive_growth=%s max_queue=%s",
                 self._platform, self._read_calls, self._queued_frames,
-                self._non_silent_frames,
+                self._non_silent_frames, stats["speakers"], stats["queued_frames"],
+                stats["underruns"], stats["overflows"], stats["capacity_increases"],
+                stats["max_queue_frames"],
             )
             self._last_log_at = now
             self._read_calls = 0
