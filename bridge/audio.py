@@ -30,6 +30,11 @@ SAMPLES_PER_FRAME = SAMPLE_RATE * FRAME_MS // 1000
 FRAME_BYTES = SAMPLES_PER_FRAME * CHANNELS * 2
 SILENCE_FRAME = bytes(FRAME_BYTES)
 
+# Keep mixer work bounded during long-running calls and discard speakers that
+# stopped sending audio. Queues themselves remain deliberately very shallow.
+SPEAKER_IDLE_TIMEOUT_SECONDS = 30.0
+MAX_MIXER_SPEAKERS = 64
+
 TONE_FREQUENCY = 440.0
 TONE_AMPLITUDE = 6_000
 
@@ -55,16 +60,37 @@ class PCMFrameMixer:
         # every short packet with silence.
         self._pending: dict[Hashable, bytearray] = {}
         self._max_frames = max_frames_per_speaker
+        self._last_seen: dict[Hashable, float] = {}
         self._lock = threading.Lock()
+
+    def _prune_speakers_unlocked(self, now: float) -> None:
+        stale = [
+            speaker_id for speaker_id, last_seen in self._last_seen.items()
+            if now - last_seen >= SPEAKER_IDLE_TIMEOUT_SECONDS
+        ]
+        for speaker_id in stale:
+            self._queues.pop(speaker_id, None)
+            self._pending.pop(speaker_id, None)
+            self._last_seen.pop(speaker_id, None)
 
     def push(self, speaker_id: Hashable, pcm: bytes) -> None:
         if not pcm:
             return
         with self._lock:
+            now = time.monotonic()
+            self._prune_speakers_unlocked(now)
             target = self._queues.get(speaker_id)
             if target is None:
+                # A pathological stream of short-lived speaker IDs must not
+                # make the mixer scan an ever-growing set of empty queues.
+                if len(self._queues) >= MAX_MIXER_SPEAKERS:
+                    oldest = min(self._last_seen, key=self._last_seen.get)
+                    self._queues.pop(oldest, None)
+                    self._pending.pop(oldest, None)
+                    self._last_seen.pop(oldest, None)
                 target = queue.Queue(maxsize=self._max_frames)
                 self._queues[speaker_id] = target
+            self._last_seen[speaker_id] = now
             pending = self._pending.setdefault(speaker_id, bytearray())
             pending.extend(pcm)
 
@@ -86,6 +112,7 @@ class PCMFrameMixer:
     def read_frame_with_status(self) -> tuple[bytes, bool, bool]:
         """Return mixed PCM, whether audio was consumed, and whether it is non-silent."""
         with self._lock:
+            self._prune_speakers_unlocked(time.monotonic())
             queues = tuple(self._queues.values())
 
         # Accumulate in int32 to avoid int16 overflow when several speakers
