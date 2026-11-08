@@ -240,6 +240,7 @@ class VoiceBridge:
     async def _forward_lolka_track(self, track: Any, user_id: Any) -> None:
         resampler = av.AudioResampler(format="s16", layout="stereo", rate=48_000)
         first_frame = True
+        first_input_frame = True
         last_transfer_log_at = 0.0
         received_frames = 0
         received_bytes = 0
@@ -248,6 +249,15 @@ class VoiceBridge:
             # delivered before connect() returns and assigns that attribute.
             while True:
                 frame = await track.recv()
+                if first_input_frame:
+                    first_input_frame = False
+                    log.info(
+                        "Lolka: исходный аудиокадр user=%s rate=%s format=%s layout=%s samples=%s",
+                        user_id, getattr(frame, "sample_rate", None),
+                        getattr(getattr(frame, "format", None), "name", None),
+                        getattr(getattr(frame, "layout", None), "name", None),
+                        getattr(frame, "samples", None),
+                    )
                 converted_frames = resampler.resample(frame)
                 for converted in converted_frames:
                     pcm = converted.to_ndarray().tobytes()

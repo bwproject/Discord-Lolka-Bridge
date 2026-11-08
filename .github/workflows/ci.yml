@@ -20,4 +20,6 @@ jobs:
       - name: Verify voice dependencies
         run: python -c "import discord, davey, lolka; from discord.ext import voice_recv; print('Voice dependencies imported successfully')"
       - name: Compile Python sources
-        run: python -m compileall -q main.py bridge
+        run: python -m compileall -q main.py bridge tests
+      - name: Run audio regression tests
+        run: python -m unittest discover -s tests -v

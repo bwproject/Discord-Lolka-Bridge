@@ -90,6 +90,13 @@ class PCMFrameMixer:
         self._capacity_increases = 0
         self._lock = threading.Lock()
 
+    @staticmethod
+    def _set_queue_capacity(target: queue.Queue[bytes], capacity: int) -> None:
+        # queue.Queue reads maxsize while holding its own mutex; update it under
+        # the same lock because the audio consumer drains queues concurrently.
+        with target.mutex:
+            target.maxsize = capacity
+
     def _prune_speakers_unlocked(self, now: float) -> None:
         stale = [
             speaker_id for speaker_id, last_seen in self._last_seen.items()
@@ -146,8 +153,9 @@ class PCMFrameMixer:
                     if consecutive >= JITTER_GROW_AFTER and current_limit < MAX_ADAPTIVE_FRAMES:
                         current_limit += 1
                         self._queue_limits[speaker_id] = current_limit
-                        target.maxsize = current_limit
+                        self._set_queue_capacity(target, current_limit)
                         self._capacity_increases += 1
+                        self._stable_since[speaker_id] = now
                         self._consecutive_overflows[speaker_id] = 0
                         log.info(
                             "Audio jitter buffer: speaker=%s capacity increased to %s frames",
@@ -178,7 +186,7 @@ class PCMFrameMixer:
                     and source.qsize() <= self._max_frames
                 ):
                     self._queue_limits[speaker_id] = self._max_frames
-                    source.maxsize = self._max_frames
+                    self._set_queue_capacity(source, self._max_frames)
                     self._stable_since[speaker_id] = now
                     log.info(
                         "Audio jitter buffer: speaker=%s capacity returned to %s frames",
