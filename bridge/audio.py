@@ -34,6 +34,28 @@ SILENCE_FRAME = bytes(FRAME_BYTES)
 # stopped sending audio. Queues themselves remain deliberately very shallow.
 SPEAKER_IDLE_TIMEOUT_SECONDS = 30.0
 MAX_MIXER_SPEAKERS = 6
+# Adaptive queue capacity: start at the configured low-latency depth and grow
+# only when packets arrive faster than the playback clock can consume them.
+MAX_ADAPTIVE_FRAMES = 4
+MIN_ADAPTIVE_FRAMES = 2
+JITTER_GROW_AFTER = 3
+JITTER_SHRINK_AFTER_SECONDS = 20.0
+SOFT_LIMITER_KNEE = 0.75
+
+
+def _soft_limit(samples: np.ndarray) -> np.ndarray:
+    """Apply a smooth peak limiter to an int32 mix without hard clipping."""
+    values = samples.astype(np.float32, copy=False)
+    magnitude = np.abs(values)
+    knee = 32767.0 * SOFT_LIMITER_KNEE
+    headroom = 32767.0 - knee
+    over = magnitude > knee
+    limited = values.copy()
+    limited[over] = np.sign(values[over]) * (
+        knee + headroom * np.tanh((magnitude[over] - knee) / headroom)
+    )
+    return np.clip(limited, -32768.0, 32767.0).astype("<i2")
+
 
 TONE_FREQUENCY = 440.0
 TONE_AMPLITUDE = 6_000
@@ -61,6 +83,12 @@ class PCMFrameMixer:
         self._pending: dict[Hashable, bytearray] = {}
         self._max_frames = max_frames_per_speaker
         self._last_seen: dict[Hashable, float] = {}
+        self._queue_limits: dict[Hashable, int] = {}
+        self._consecutive_overflows: dict[Hashable, int] = {}
+        self._stable_since: dict[Hashable, float] = {}
+        self._underruns = 0
+        self._overflows = 0
+        self._capacity_increases = 0
         self._lock = threading.Lock()
 
     def _prune_speakers_unlocked(self, now: float) -> None:
@@ -72,6 +100,9 @@ class PCMFrameMixer:
             self._queues.pop(speaker_id, None)
             self._pending.pop(speaker_id, None)
             self._last_seen.pop(speaker_id, None)
+            self._queue_limits.pop(speaker_id, None)
+            self._consecutive_overflows.pop(speaker_id, None)
+            self._stable_since.pop(speaker_id, None)
 
     def push(self, speaker_id: Hashable, pcm: bytes) -> None:
         if not pcm:
@@ -88,8 +119,14 @@ class PCMFrameMixer:
                     self._queues.pop(oldest, None)
                     self._pending.pop(oldest, None)
                     self._last_seen.pop(oldest, None)
+                    self._queue_limits.pop(oldest, None)
+                    self._consecutive_overflows.pop(oldest, None)
+                    self._stable_since.pop(oldest, None)
                 target = queue.Queue(maxsize=self._max_frames)
                 self._queues[speaker_id] = target
+                self._queue_limits[speaker_id] = self._max_frames
+                self._consecutive_overflows[speaker_id] = 0
+                self._stable_since[speaker_id] = now
             self._last_seen[speaker_id] = now
             pending = self._pending.setdefault(speaker_id, bytearray())
             pending.extend(pcm)
@@ -103,26 +140,65 @@ class PCMFrameMixer:
                 try:
                     target.put_nowait(frame)
                 except queue.Full:
+                    self._overflows += 1
+                    consecutive = self._consecutive_overflows.get(speaker_id, 0) + 1
+                    self._consecutive_overflows[speaker_id] = consecutive
+                    current_limit = self._queue_limits.get(speaker_id, self._max_frames)
+                    if consecutive >= JITTER_GROW_AFTER and current_limit < MAX_ADAPTIVE_FRAMES:
+                        current_limit += 1
+                        self._queue_limits[speaker_id] = current_limit
+                        target.maxsize = current_limit
+                        self._capacity_increases += 1
+                        self._consecutive_overflows[speaker_id] = 0
+                        log.info(
+                            "Audio jitter buffer: speaker=%s capacity increased to %s frames",
+                            speaker_id, current_limit,
+                        )
                     try:
                         target.get_nowait()
                         target.put_nowait(frame)
                     except (queue.Empty, queue.Full):
                         pass
+                else:
+                    self._consecutive_overflows[speaker_id] = 0
+                    self._stable_since[speaker_id] = now
 
     def read_frame_with_status(self) -> tuple[bytes, bool, bool]:
         """Return mixed PCM, whether audio was consumed, and whether it is non-silent."""
         with self._lock:
             self._prune_speakers_unlocked(time.monotonic())
-            queues = tuple(self._queues.values())
+            now = time.monotonic()
+            queue_items = tuple(self._queues.items())
+            # Shrink expanded queues after a sustained stable period. This
+            # prevents temporary network jitter from permanently adding latency.
+            for speaker_id, source in queue_items:
+                stable_since = self._stable_since.get(speaker_id, now)
+                current_limit = self._queue_limits.get(speaker_id, self._max_frames)
+                if (
+                    current_limit > self._max_frames
+                    and now - stable_since >= JITTER_SHRINK_AFTER_SECONDS
+                    and source.qsize() <= self._max_frames
+                ):
+                    self._queue_limits[speaker_id] = self._max_frames
+                    source.maxsize = self._max_frames
+                    self._stable_since[speaker_id] = now
+                    log.info(
+                        "Audio jitter buffer: speaker=%s capacity returned to %s frames",
+                        speaker_id, self._max_frames,
+                    )
 
         # Accumulate in int32 to avoid int16 overflow when several speakers
         # talk simultaneously. NumPy performs the sample operations in native code.
         mixed = np.zeros(SAMPLES_PER_FRAME * CHANNELS, dtype=np.int32)
         has_audio = False
-        for source in queues:
+        for speaker_id, source in queue_items:
             try:
                 frame = source.get_nowait()
             except queue.Empty:
+                with self._lock:
+                    last_seen = self._last_seen.get(speaker_id, 0.0)
+                    if time.monotonic() - last_seen < 1.0:
+                        self._underruns += 1
                 continue
             has_audio = True
             samples = np.frombuffer(frame, dtype="<i2")
@@ -132,8 +208,19 @@ class PCMFrameMixer:
             return SILENCE_FRAME, False, False
 
         has_signal = bool(np.any(mixed))
-        np.clip(mixed, -32768, 32767, out=mixed)
-        return mixed.astype("<i2", copy=False).tobytes(), True, has_signal
+        return _soft_limit(mixed).tobytes(), True, has_signal
+
+    def diagnostics(self) -> dict[str, int]:
+        """Return a consistent snapshot of mixer and adaptive-buffer counters."""
+        with self._lock:
+            return {
+                "speakers": len(self._queues),
+                "underruns": self._underruns,
+                "overflows": self._overflows,
+                "capacity_increases": self._capacity_increases,
+                "queued_frames": sum(source.qsize() for source in self._queues.values()),
+                "max_queue_frames": max(self._queue_limits.values(), default=0),
+            }
 
     def read_frame(self) -> bytes:
         # Keep the original public API for callers and tests.
