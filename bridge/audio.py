@@ -33,7 +33,7 @@ SILENCE_FRAME = bytes(FRAME_BYTES)
 # Keep mixer work bounded during long-running calls and discard speakers that
 # stopped sending audio. Queues themselves remain deliberately very shallow.
 SPEAKER_IDLE_TIMEOUT_SECONDS = 30.0
-MAX_MIXER_SPEAKERS = 64
+MAX_MIXER_SPEAKERS = 6
 
 TONE_FREQUENCY = 440.0
 TONE_AMPLITUDE = 6_000
