@@ -8,6 +8,7 @@ import struct
 import threading
 import time
 from collections import defaultdict, deque
+from pathlib import Path
 
 import numpy as np
 
@@ -15,6 +16,46 @@ try:
     from .secure_transport import SecureSocket
 except ImportError:  # Running server.py directly from the Pterodactyl server root.
     from secure_transport import SecureSocket
+
+
+def load_env_file(path: Path, environ: dict[str, str] | None = None) -> bool:
+    """Load simple KEY=VALUE settings without overriding existing environment values."""
+    target = os.environ if environ is None else environ
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return False
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or not key.replace("_", "a").isalnum() or key[0].isdigit():
+            continue
+
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        else:
+            # Treat a hash preceded by whitespace as an inline comment.
+            value = value.split(" #", 1)[0].rstrip()
+
+        if key not in target or not target[key].strip():
+            target[key] = value
+    return True
+
+
+# Resolve .env beside this file, not relative to the process working directory.
+# This works both for "python processor/server.py" and "python server.py" in processor/.
+ENV_FILE = Path(__file__).resolve().with_name(".env")
+ENV_FILE_LOADED = load_env_file(ENV_FILE)
 
 LOG = logging.getLogger("voice-processor")
 SAMPLE_RATE = 48_000
@@ -142,9 +183,12 @@ class VoiceProcessorServer:
         # Pterodactyl exposes the allocation; bind on all container interfaces.
         self.host = os.getenv("PROCESSOR_IP", "0.0.0.0")
         self.port = int(os.getenv("PROCESSOR_PORT", "9443"))
-        self.secret = os.environ["PROCESSOR_SECRET"]
+        self.secret = os.getenv("PROCESSOR_SECRET", "")
         if len(self.secret.encode("utf-8")) < 32:
-            raise RuntimeError("PROCESSOR_SECRET must contain at least 32 bytes")
+            raise RuntimeError(
+                "PROCESSOR_SECRET is missing or too short. Set it in Pterodactyl "
+                "Startup Variables or in processor/.env (minimum 32 bytes)."
+            )
         self.stop_event = threading.Event()
         self.server: socket.socket | None = None
 

@@ -12,9 +12,9 @@
 - Импортируй egg pterodactyl/egg-bw-voice-processor.json либо задай переменные вручную.
 - Установи зависимости из requirements.txt через install script egg.
 
-## 2. Только три настройки
+## 2. Настройки
 
-В Pterodactyl Startup / Variables:
+Можно задать переменные в Pterodactyl Startup / Variables:
 
 | Переменная | Значение |
 |---|---|
@@ -22,13 +22,25 @@
 | PROCESSOR_PORT | порт allocation, например 9443 |
 | PROCESSOR_SECRET | случайный общий секрет |
 
+Либо создай файл `processor/.env` рядом с `server.py`:
+
+```dotenv
+PROCESSOR_IP=0.0.0.0
+PROCESSOR_PORT=9443
+PROCESSOR_SECRET=ВСТАВЬ_СЮДА_СЛУЧАЙНЫЙ_СЕКРЕТ
+```
+
+Если запускаешь из корня Pterodactyl командой `python processor/server.py`, путь всё равно должен быть `/home/container/processor/.env`. Если загружаешь содержимое папки processor/ прямо в корень сервера, тогда положи .env рядом с server.py в корне. Скрипт ищет .env рядом с самим файлом, а не в текущей рабочей папке.
+
+Переменные Startup в Pterodactyl имеют приоритет над значениями из .env. Поэтому можно использовать оба способа, но не оставляй неверный пустой PROCESSOR_SECRET в Startup: он перекроет значение из файла.
+
 Сгенерируй секрет:
 
-\`\`\`bash
+```bash
 openssl rand -hex 32
-\`\`\`
+```
 
-Скопируй его в безопасное место. Он должен совпадать на обеих сторонах. Не вставляй его в GitHub или публичные логи.
+Скопируй его в безопасное место. Он должен совпадать на обеих сторонах. Не вставляй его в GitHub или публичные логи. Реальный .env исключён из Git; в репозитории хранится только .env.example.
 
 PROCESSOR_IP=0.0.0.0 — это адрес прослушивания внутри Pterodactyl, не публичный IP. Боты подключаются к публичному IP, назначенному allocation.
 
@@ -36,15 +48,15 @@ PROCESSOR_IP=0.0.0.0 — это адрес прослушивания внутр
 
 Startup command:
 
-\`\`\`bash
+```bash
 python server.py
-\`\`\`
+```
 
 Ожидаемая строка в консоли:
 
-\`\`\`text
+```text
 Encrypted voice processor listening on 0.0.0.0:9443
-\`\`\`
+```
 
 После подключения появится Authenticated encrypted client connected.
 
@@ -52,11 +64,11 @@ Encrypted voice processor listening on 0.0.0.0:9443
 
 В основном .env достаточно заполнить три строки:
 
-\`\`\`dotenv
+```dotenv
 AUDIO_PROCESSOR_IP=203.0.113.10
 AUDIO_PROCESSOR_PORT=9443
 AUDIO_PROCESSOR_SECRET=ТОТ_ЖЕ_СЕКРЕТ
-\`\`\`
+```
 
 Здесь указывается публичный IP Pterodactyl-сервера, не 0.0.0.0. Удалённая обработка включается автоматически, когда заполнены IP и secret. Если оба значения пустые, остаётся локальный микшер. Если удалённый процессор недоступен, клиент автоматически использует локальный fallback и повторяет подключение.
 
