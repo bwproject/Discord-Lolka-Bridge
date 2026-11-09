@@ -67,6 +67,11 @@ async def main() -> None:
         return {
             "uptime_seconds": asyncio.get_running_loop().time() - process_started_at,
             "bridge": {"connected": bridge.connected, "mode": "automatic-presence"},
+            "audio_processor": {
+                "enabled": bridge.remote_audio_client is not None,
+                "connected": bool(bridge.remote_audio_client and bridge.remote_audio_client.connected),
+                "fallback": "local",
+            },
             "discord": {
                 "ready": discord_bot.is_ready() and not discord_bot.is_closed(),
                 "name": str(discord_bot.user) if discord_bot.user else None,
@@ -413,6 +418,7 @@ async def main() -> None:
             pass
         await dashboard.close()
         await bridge.stop()
+        bridge.close()
         await discord_bot.close()
         await lolka_bot.close()
         log.info("Voice Bridge остановлен")

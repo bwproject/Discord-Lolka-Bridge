@@ -12,6 +12,7 @@ from aiortc.mediastreams import MediaStreamError
 from discord.ext import voice_recv
 
 from .audio import LolkaMixerAudioSource, MixerAudioSource, PCMFrameMixer
+from .remote_audio import RemoteAudioClient, RemotePCMFrameMixer
 
 log = logging.getLogger(__name__)
 
@@ -101,14 +102,32 @@ class VoiceBridge:
         self.discord_bot = discord_bot
         self.lolka_bot = lolka_bot
         self.config = config
-        self.discord_to_lolka = PCMFrameMixer(config.max_frames_per_speaker)
-        self.lolka_to_discord = PCMFrameMixer(config.max_frames_per_speaker)
+        self.remote_audio_client = (
+            RemoteAudioClient(
+                config.audio_processor_host,
+                config.audio_processor_port,
+                config.audio_processor_secret,
+            )
+            if config.audio_processor_enabled else None
+        )
+        self.discord_to_lolka = self._new_mixer(0)
+        self.lolka_to_discord = self._new_mixer(1)
         self.discord_voice: discord.VoiceClient | None = None
         self.lolka_voice: Any | None = None
         self._lock = asyncio.Lock()
         self._track_tasks: set[asyncio.Task[None]] = set()
         self._seen_lolka_speakers: set[str] = set()
         self._logged_resolved_channels: set[tuple[str, int]] = set()
+
+    def _new_mixer(self, bus: int) -> PCMFrameMixer | RemotePCMFrameMixer:
+        local = PCMFrameMixer(self.config.max_frames_per_speaker)
+        if self.remote_audio_client is None:
+            return local
+        return RemotePCMFrameMixer(local, self.remote_audio_client, bus)
+
+    def close(self) -> None:
+        if self.remote_audio_client is not None:
+            self.remote_audio_client.close()
 
     @property
     def connected(self) -> bool:
@@ -320,5 +339,5 @@ class VoiceBridge:
                 log.info("Lolka: голосовое подключение закрыто")
             except Exception:
                 log.exception("Ошибка отключения Lolka voice")
-        self.discord_to_lolka = PCMFrameMixer()
-        self.lolka_to_discord = PCMFrameMixer()
+        self.discord_to_lolka = self._new_mixer(0)
+        self.lolka_to_discord = self._new_mixer(1)

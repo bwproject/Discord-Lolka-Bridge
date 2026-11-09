@@ -1,0 +1,61 @@
+{
+  "_comment": "BW Project distributed voice processor for Pterodactyl. Import this egg, select a Python 3.12 yolk, and assign a TCP allocation.",
+  "meta": {
+    "version": "PTDL_v2",
+    "update_url": null
+  },
+  "name": "BW Voice Processor",
+  "author": "bwproject",
+  "description": "Encrypted AES-256-GCM PCM voice mixer for Discord-Lolka Voice Bridge (no TLS certificates required).",
+  "features": null,
+  "docker_images": {
+    "Python 3.12": "ghcr.io/parkervcp/yolks:python_3.12"
+  },
+  "file_denylist": [],
+  "startup": "python server.py",
+  "config": {
+    "files": "{}",
+    "startup": "{\"done\":\"Encrypted voice processor listening on\"}",
+    "logs": "{}",
+    "stop": "^C"
+  },
+  "scripts": {
+    "installation": {
+      "script": "#!/bin/bash\ncd /mnt/server\npython -m pip install -r requirements.txt\n",
+      "container": "ghcr.io/parkervcp/yolks:python_3.12",
+      "entrypoint": "bash"
+    }
+  },
+  "variables": [
+    {
+      "name": "Bind IP",
+      "description": "Keep 0.0.0.0 so Pterodactyl allocation can reach the server.",
+      "env_variable": "PROCESSOR_IP",
+      "default_value": "0.0.0.0",
+      "user_viewable": true,
+      "user_editable": false,
+      "rules": "required|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Port",
+      "description": "Must match the TCP allocation assigned to this Pterodactyl server.",
+      "env_variable": "PROCESSOR_PORT",
+      "default_value": "9443",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer|min:1|max:65535",
+      "field_type": "text"
+    },
+    {
+      "name": "Shared secret",
+      "description": "Generate a random secret with: openssl rand -hex 32. Use exactly the same secret on the bot server.",
+      "env_variable": "PROCESSOR_SECRET",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|min:64",
+      "field_type": "text"
+    }
+  ]
+}

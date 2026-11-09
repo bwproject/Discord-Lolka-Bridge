@@ -64,9 +64,17 @@ class Config:
     max_frames_per_speaker: int
     dashboard_host: str
     dashboard_port: int
+    audio_processor_enabled: bool
+    audio_processor_host: str
+    audio_processor_port: int
+    audio_processor_secret: str
 
     @classmethod
     def from_env(cls) -> "Config":
+        processor_host = os.getenv("AUDIO_PROCESSOR_IP", "").strip()
+        processor_secret = os.getenv("AUDIO_PROCESSOR_SECRET", "").strip()
+        if bool(processor_host) != bool(processor_secret):
+            raise RuntimeError("AUDIO_PROCESSOR_IP and AUDIO_PROCESSOR_SECRET must both be set")
         return cls(
             discord_token=_required("DISCORD_BOT_TOKEN"),
             lolka_token=_required("LOLKA_BOT_TOKEN"),
@@ -81,4 +89,8 @@ class Config:
             max_frames_per_speaker=_optional_int("MAX_FRAMES_PER_SPEAKER", default=2),
             dashboard_host=os.getenv("DASHBOARD_HOST", "127.0.0.1").strip() or "127.0.0.1",
             dashboard_port=_optional_int("DASHBOARD_PORT", default=8080, minimum=1),
+            audio_processor_enabled=bool(processor_host and processor_secret),
+            audio_processor_host=processor_host,
+            audio_processor_port=_optional_int("AUDIO_PROCESSOR_PORT", default=9443, minimum=1),
+            audio_processor_secret=processor_secret,
         )
