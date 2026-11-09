@@ -13,6 +13,7 @@ from bridge.config import Config
 from bridge.dashboard import DashboardServer
 from bridge.dave import patch_dave_transitions
 from bridge.manager import VoiceBridge
+from bridge.retry import run_client_with_retry
 
 logging.basicConfig(
     level=logging.INFO,
@@ -406,9 +407,12 @@ async def main() -> None:
         name="voice-presence-supervisor",
     )
     try:
+        # Keep the platform clients isolated: a fatal Lolka API timeout must not
+        # cancel the Discord client (and vice versa). Each client retries with
+        # exponential backoff; normal Gateway reconnects remain library-managed.
         await asyncio.gather(
-            discord_bot.start(config.discord_token),
-            lolka_bot.start(config.lolka_token),
+            run_client_with_retry("Discord", discord_bot, config.discord_token, log),
+            run_client_with_retry("Lolka", lolka_bot, config.lolka_token, log),
         )
     finally:
         supervisor_task.cancel()
